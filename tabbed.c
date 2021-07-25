@@ -111,6 +111,7 @@ static Bool gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void initfont(const char *fontstr);
 static Bool isprotodel(int c);
 static void keypress(const XEvent *e);
+static void keyrelease(const XEvent *e);
 static void killclient(const Arg *arg);
 static void manage(Window win);
 static void maprequest(const XEvent *e);
@@ -124,6 +125,7 @@ static void sendxembed(int c, long msg, long detail, long d1, long d2);
 static void setup(void);
 static void setcmd(int argc, char *argv[], int);
 static void sigchld(int unused);
+static void showbar(const Arg *arg);
 static void spawn(const Arg *arg);
 static int textnw(const char *text, unsigned int len);
 static void unmanage(int c);
@@ -144,10 +146,11 @@ static void (*handler[LASTEvent]) (const XEvent *) = {
 	[Expose] = expose,
 	[FocusIn] = focusin,
 	[KeyPress] = keypress,
+	[KeyRelease] = keyrelease,
 	[MapRequest] = maprequest,
 	[PropertyNotify] = propertynotify,
 };
-static int bh, wx, wy, ww, wh;
+static int bh, wx, wy, ww, wh, vbh;
 static unsigned int numlockmask = 0;
 static Bool running = True, nextfocus, doinitspawn = True,
 	    fillagain = False, closelastclient = False;
@@ -163,13 +166,14 @@ static char winid[64];
 static char **cmd = NULL;
 static char *wmname = "tabbed";
 static const char *geometry = NULL;
+static Bool barvisibility = False;
 
 char *argv0;
 
 /* configuration, allows nested code to access above variables */
 #include "config.h"
 
-void
+;void
 buttonpress(const XEvent *e) {
 	const XButtonPressedEvent *ev = &e->xbutton;
 	int i;
@@ -306,8 +310,17 @@ die(const char *errstr, ...) {
 void
 drawbar(void) {
 	unsigned long *col;
-	int c, fc, width, n = 0;
+	int c, fc, width, n = 0, nbh;
 	char *name = NULL;
+
+	nbh = barvisibility ? vbh : 0;
+	if (nbh != bh) {
+		bh = nbh;
+		for (c = 0; c < nclients; c++)
+			XMoveResizeWindow(dpy, clients[c]->win, 0, bh, ww, wh-bh);
+	}
+
+	if (bh == 0) return;
 
 	if(nclients == 0) {
 		dc.x = 0;
@@ -657,6 +670,22 @@ keypress(const XEvent *e) {
 }
 
 void
+keyrelease(const XEvent *e)
+{
+	const XKeyEvent *ev = &e->xkey;
+	unsigned int i;
+	KeySym keysym;
+
+	keysym = XkbKeycodeToKeysym(dpy, (KeyCode)ev->keycode, 0, 0);
+	for (i = 0; i < LENGTH(keyreleases); i++) {
+		if (keysym == keyreleases[i].keysym &&
+		    CLEANMASK(keyreleases[i].mod) == CLEANMASK(ev->state) &&
+		    keyreleases[i].func)
+			keyreleases[i].func(&(keyreleases[i].arg));
+	}
+}
+
+void
 killclient(const Arg *arg) {
 	XEvent ev;
 
@@ -701,6 +730,16 @@ manage(Window w) {
 							| modifiers[j], w,
 						 True, GrabModeAsync,
 						 GrabModeAsync);
+				}
+			}
+		}
+		
+		for (i = 0; i < LENGTH(keyreleases); i++) {
+			if ((code = XKeysymToKeycode(dpy, keyreleases[i].keysym))) {
+				for (j = 0; j < LENGTH(modifiers); j++) {
+					XGrabKey(dpy, code, keyreleases[i].mod |
+							modifiers[j], w, True,
+							GrabModeAsync, GrabModeAsync);
 				}
 			}
 		}
@@ -920,7 +959,7 @@ setup(void) {
 	screen = DefaultScreen(dpy);
 	root = RootWindow(dpy, screen);
 	initfont(font);
-	bh = dc.h = dc.font.height + 2;
+	vbh = dc.h = dc.font.height + 2;
 
 	/* init atoms */
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
@@ -979,7 +1018,8 @@ setup(void) {
 			dc.norm[ColFG], dc.norm[ColBG]);
 	XMapRaised(dpy, win);
 	XSelectInput(dpy, win, SubstructureNotifyMask|FocusChangeMask|
-			ButtonPressMask|ExposureMask|KeyPressMask|PropertyChangeMask|
+			ButtonPressMask|ExposureMask|KeyPressMask|
+			KeyReleaseMask|PropertyChangeMask|
 			StructureNotifyMask|SubstructureRedirectMask);
 	xerrorxlib = XSetErrorHandler(xerror);
 
@@ -1007,6 +1047,13 @@ setup(void) {
 
 	nextfocus = foreground;
 	focus(-1);
+}
+
+void
+showbar(const Arg *arg)
+{
+	barvisibility = arg->i;
+	drawbar();
 }
 
 void
